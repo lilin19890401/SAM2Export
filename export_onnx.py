@@ -160,10 +160,10 @@ if __name__ == "__main__":
     parser.add_argument("--config",type=str,default=model_config_file,required=False,help="*.yaml")
     parser.add_argument("--checkpoint",type=str,default=model_checkpoints_file,required=False,help="*.pt")
     args = parser.parse_args()
-    #sam2_model = build_sam2(args.config, args.checkpoint, device="cpu")
-	sam2_model = build_sam2_video_predictor(args.config, args.checkpoint, device="cpu")
+    # sam2_model = build_sam2(args.config, args.checkpoint, device="cpu")
+    sam2_model = build_sam2_video_predictor(args.config, args.checkpoint, device="cpu")
     
-	image_encoder = ImageEncoder(sam2_model).cpu()
+    image_encoder = ImageEncoder(sam2_model).cpu()
     export_image_encoder(image_encoder,args.outdir)
 
     image_decoder = ImageDecoder(sam2_model).cpu()
