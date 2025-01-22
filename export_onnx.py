@@ -34,7 +34,7 @@ def export_image_encoder(model,onnx_path):
     onnx.checker.check_model(onnx_model)
     print("image_encoder_2.onnx model is valid!")
     
-def export_memory_attention(model,onnx_path):
+def export_memory_attention(model, onnx_path, Isdynamic=True):
     current_vision_feat = torch.randn(1,256,64,64)      #[1, 256, 64, 64],当前帧的视觉特征
     current_vision_pos_embed = torch.randn(4096,1,256)  #[4096, 1, 256],当前帧的位置特征
     memory_0 = torch.randn(16,256)                   
@@ -60,24 +60,24 @@ def export_memory_attention(model,onnx_path):
     torch.onnx.export(
         model,
         (current_vision_feat,current_vision_pos_embed,memory_0,memory_1,memory_pos_embed),
-        onnx_path+"memory_attention_dynamic_2.onnx",
+        onnx_path + "memory_attention_dynamic_2.onnx" if Isdynamic is True else onnx_path + "memory_attention_2.onnx",
         export_params=True,
         opset_version=17,
         do_constant_folding=True,
         input_names= input_name,
         output_names=["mem_atten_pix_feat_with_mem"],
-        dynamic_axes = dynamic_axes
+        dynamic_axes = dynamic_axes if Isdynamic is True else None
     )
      # 简化模型,
     # original_model = onnx.load(onnx_path+"memory_attention.onnx")
     # simplified_model, check = simplify(original_model)
     # onnx.save(simplified_model, onnx_path+"memory_attention.onnx")
     # 检查检查.onnx格式是否正确
-    onnx_model = onnx.load(onnx_path+"memory_attention_dynamic_2.onnx")
+    onnx_model = onnx.load(onnx_path+"memory_attention_dynamic_2.onnx" if Isdynamic is True else onnx_path + "memory_attention_2.onnx")
     onnx.checker.check_model(onnx_model)
-    print("memory_attention_dynamic_2.onnx model is valid!")
+    print("memory_attention_dynamic_2.onnx or memory_attention_2.onnx model is valid!")
 
-def export_image_decoder(model,onnx_path):
+def export_image_decoder(model, onnx_path, Isdynamic=True):
     point_coords = torch.randn(1,1,2).cpu()         # point_coords = torch.randn(1,2,2).cpu()
     point_labels = torch.randn(1,1).cpu()           # point_labels = torch.randn(1,2).cpu()
     pix_feat_with_mem = torch.randn(1,256,64,64).cpu()
@@ -101,22 +101,22 @@ def export_image_decoder(model,onnx_path):
     torch.onnx.export(
         model,
         (point_coords,point_labels,pix_feat_with_mem,high_res_feats_0,high_res_feats_1),
-        onnx_path+"image_decoder_dynamic_2.onnx",
+        onnx_path+"image_decoder_dynamic_2.onnx" if Isdynamic is True else onnx_path+"image_decoder_2.onnx",
         export_params=True,
         opset_version=17,
         do_constant_folding=True,
         input_names= input_name,
         output_names=output_name,
-        dynamic_axes = dynamic_axes
+        dynamic_axes = dynamic_axes if Isdynamic is True else None
     )
     # 简化模型,
     # original_model = onnx.load(onnx_path+"image_decoder.onnx")
     # simplified_model, check = simplify(original_model)
     # onnx.save(simplified_model, onnx_path+"image_decoder.onnx")
     # 检查检查.onnx格式是否正确
-    onnx_model = onnx.load(onnx_path+"image_decoder_dynamic_2.onnx")
+    onnx_model = onnx.load(onnx_path+"image_decoder_dynamic_2.onnx" if Isdynamic is True else onnx_path+"image_decoder_2.onnx")
     onnx.checker.check_model(onnx_model)
-    print("image_decoder_dynamic_2.onnx model is valid!")
+    print("image_decoder_dynamic_2.onnx or image_decoder_2.onnx model is valid!")
 
 def export_memory_encoder(model,onnx_path):
     mask_for_mem = torch.randn(1,1,1024,1024) 
@@ -163,15 +163,15 @@ if __name__ == "__main__":
     # sam2_model = build_sam2(args.config, args.checkpoint, device="cpu")
     sam2_model = build_sam2_video_predictor(args.config, args.checkpoint, device="cpu")
     
-    image_encoder = ImageEncoder(sam2_model).cpu()
-    export_image_encoder(image_encoder,args.outdir)
+    # image_encoder = ImageEncoder(sam2_model).cpu()
+    # export_image_encoder(image_encoder,args.outdir)
 
     image_decoder = ImageDecoder(sam2_model).cpu()
-    export_image_decoder(image_decoder,args.outdir)
+    export_image_decoder(image_decoder, args.outdir, Isdynamic=False)
 
 
-    mem_attention = MemAttention(sam2_model).cpu()
-    export_memory_attention(mem_attention,args.outdir)
-
-    mem_encoder   = MemEncoder(sam2_model).cpu()
-    export_memory_encoder(mem_encoder,args.outdir)
+    # mem_attention = MemAttention(sam2_model).cpu()
+    # export_memory_attention(mem_attention, args.outdir, Isdynamic=True)
+    #
+    # mem_encoder   = MemEncoder(sam2_model).cpu()
+    # export_memory_encoder(mem_encoder,args.outdir)
