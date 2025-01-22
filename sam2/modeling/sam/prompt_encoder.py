@@ -24,7 +24,7 @@ class PromptEncoder(nn.Module):
         activation: Type[nn.Module] = nn.GELU,
     ) -> None:
         """
-        Encodes prompts for input to SAM's mask decoder.
+        Encodes prompts for input to SAM's mask decoder. 对prompts(点、框、mask)进行embeding
 
         Arguments:
           embed_dim (int): The prompts' embedding dimension
@@ -39,21 +39,25 @@ class PromptEncoder(nn.Module):
         """
         super().__init__()
         self.embed_dim = embed_dim
+        # 用于坐标归一化
         self.input_image_size = input_image_size
+        # 用于图像经过patch处理之后的width height，容易和embed_dim混淆
         self.image_embedding_size = image_embedding_size
+        # PE, sin-cos
         self.pe_layer = PositionEmbeddingRandom(embed_dim // 2)
-
+        # 统一point和box的embeding向量
         self.num_point_embeddings: int = 4  # pos/neg point + 2 box corners
-        point_embeddings = [
-            nn.Embedding(1, embed_dim) for i in range(self.num_point_embeddings)
-        ]
+        # 对point是否有效进行embeding,然后加到PE上
+        point_embeddings = [ nn.Embedding(1, embed_dim) for i in range(self.num_point_embeddings) ]
         self.point_embeddings = nn.ModuleList(point_embeddings)
+        #如果point为无效的（比如pad的），则用下面这个
         self.not_a_point_embed = nn.Embedding(1, embed_dim)
 
         self.mask_input_size = (
             4 * image_embedding_size[0],
             4 * image_embedding_size[1],
         )
+        # mask下采样模块
         self.mask_downscaling = nn.Sequential(
             nn.Conv2d(1, mask_in_chans // 4, kernel_size=2, stride=2),
             LayerNorm2d(mask_in_chans // 4),
@@ -84,6 +88,7 @@ class PromptEncoder(nn.Module):
     ) -> torch.Tensor:
         """Embeds point prompts."""
         points = points + 0.5  # Shift to center of pixel
+        # pad,保持和box统一
         if pad:
             padding_point = torch.zeros((points.shape[0], 1, 2), device=points.device)
             padding_label = -torch.ones((labels.shape[0], 1), device=labels.device)
@@ -93,11 +98,11 @@ class PromptEncoder(nn.Module):
             points, self.input_image_size
         )
 
-        # こっちだとonnxでbroadcast error
+        # onnx broadcast error
         #point_embedding[labels == -1] = 0.0
         #point_embedding[labels == -1] += self.not_a_point_embed.weight
 
-        # こっちだとonnxで動くが、tfliteでうごかない
+        # 这个适用于onnx,不适用于tfile
         #point_embedding[labels == -1] = self.not_a_point_embed.weight
         
         #point_embedding[labels == 0] += self.point_embeddings[0].weight
@@ -105,7 +110,7 @@ class PromptEncoder(nn.Module):
         #point_embedding[labels == 2] += self.point_embeddings[2].weight
         #point_embedding[labels == 3] += self.point_embeddings[3].weight
 
-        # こっちだと、tfliteでも動く
+        # 这个也适用于tfile
         labels = labels.int()
         table = torch.zeros((5, self.point_embeddings[0].weight.shape[1]))
         table[0] = self.not_a_point_embed.weight
@@ -181,9 +186,8 @@ class PromptEncoder(nn.Module):
             raise("onnx not supported coords is None")
 
         bs = self._get_batch_size(coords, labels, masks)
-        sparse_embeddings = torch.empty(
-            (bs, 0, self.embed_dim), device=self._get_device()
-        )
+        # sparse_embeddings只是为了保证函数返回形式统一，即点和框都为NONE的时候返回一个空的tensor
+        sparse_embeddings = torch.empty((bs, 0, self.embed_dim), device=self._get_device())     # [B,4,256]
 
         point_embeddings = self._embed_points(coords, labels, pad=True)
         sparse_embeddings = torch.cat([sparse_embeddings, point_embeddings], dim=1)
@@ -193,6 +197,6 @@ class PromptEncoder(nn.Module):
         )
         dense_embeddings2 = self._embed_masks(masks)
 
-        dense_embeddings = torch.where(masks_enable[0] == 1, dense_embeddings2, dense_embeddings1)
+        dense_embeddings = torch.where(masks_enable[0] == 1, dense_embeddings2, dense_embeddings1)  # [B,256,64,64]
 
         return sparse_embeddings, dense_embeddings, self.get_dense_pe()

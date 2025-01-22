@@ -584,7 +584,7 @@ class SAM2Base(torch.nn.Module):
             obj_ptr = self.mlp_onnx.run(None, {"x":sam_output_token.numpy()})[0]
             obj_ptr = torch.Tensor(obj_ptr)
         
-        if not import_from_onnx:
+        if not import_from_onnx and not import_from_tflite:
             obj_ptr = self.obj_ptr_proj(sam_output_token)
 
         if self.pred_obj_scores:
@@ -699,14 +699,14 @@ class SAM2Base(torch.nn.Module):
 
     def _prepare_memory_conditioned_features(
         self,
-        frame_idx,
+        frame_idx,                      # 当前帧的索引
         is_init_cond_frame,
-        current_vision_feats,
-        current_vision_pos_embeds,
-        feat_sizes,
-        output_dict,
-        num_frames,
-        track_in_reverse=False,  # tracking in reverse time order (for demo usage)
+        current_vision_feats,           # 当前帧的视觉特征
+        current_vision_pos_embeds,      # 当前帧的视觉位置编码
+        feat_sizes,                     # 特征图的大小
+        output_dict,                    # 输出字典，用于存储处理结果
+        num_frames,                     # 总帧数
+        track_in_reverse=False,         # tracking in reverse time order (for demo usage)
         export_to_onnx=False,
         import_from_onnx=False,
         export_to_tflite=False,
@@ -774,6 +774,9 @@ class SAM2Base(torch.nn.Module):
                     out = unselected_cond_outputs.get(prev_frame_idx, None)
                 t_pos_and_prevs.append((t_pos, out))
 
+            # 这里之后，to_cat_memory_pos_embed大小是推理过的帧的数量的大小，但有个最大限制，也就是缓存数目的大小
+            # 时间编码 maskmem_tpos_enc 的大小是7
+            # to_cat_memory_pos_embed[0]是固定的
             for t_pos, prev in t_pos_and_prevs:
                 if prev is None:
                     continue  # skip padding frames
@@ -782,13 +785,11 @@ class SAM2Base(torch.nn.Module):
                 feats = prev["maskmem_features"].to(device, non_blocking=True)
                 to_cat_memory.append(feats.flatten(2).permute(2, 0, 1))
                 # Spatial positional encoding (it might have been offloaded to CPU in eval)
-                maskmem_enc = prev["maskmem_pos_enc"][-1].to(device)
-                maskmem_enc = maskmem_enc.flatten(2).permute(2, 0, 1)
+                maskmem_enc = prev["maskmem_pos_enc"][-1].to(device)                                # 似乎是固定的
+                maskmem_enc = maskmem_enc.flatten(2).permute(2, 0, 1)                               # [1,64,64,64] -> [4096,1,64]
                 # Temporal positional encoding
-                maskmem_enc = (
-                    maskmem_enc + self.maskmem_tpos_enc[self.num_maskmem - t_pos - 1]
-                )
-                to_cat_memory_pos_embed.append(maskmem_enc)
+                maskmem_enc = (maskmem_enc + self.maskmem_tpos_enc[self.num_maskmem - t_pos - 1])   # 倒叙取 [1,1,64]
+                to_cat_memory_pos_embed.append(maskmem_enc)                                         # 大小从1~7
 
             # Construct the list of past object pointers
             if self.use_obj_ptrs_in_encoder:
@@ -836,13 +837,11 @@ class SAM2Base(torch.nn.Module):
                         obj_pos = obj_ptrs.new_zeros(len(pos_list), B, self.mem_dim)
                     if self.mem_dim < C:
                         # split a pointer into (C // self.mem_dim) tokens for self.mem_dim < C
-                        obj_ptrs = obj_ptrs.reshape(
-                            -1, B, C // self.mem_dim, self.mem_dim
-                        )
-                        obj_ptrs = obj_ptrs.permute(0, 2, 1, 3).flatten(0, 1)
+                        obj_ptrs = obj_ptrs.reshape(-1, B, C // self.mem_dim, self.mem_dim) # [x,1,4,64]
+                        obj_ptrs = obj_ptrs.permute(0, 2, 1, 3).flatten(0, 1)               # [4*x,1,64]
                         obj_pos = obj_pos.repeat_interleave(C // self.mem_dim, dim=0)
                     to_cat_memory.append(obj_ptrs)
-                    to_cat_memory_pos_embed.append(obj_pos)
+                    to_cat_memory_pos_embed.append(obj_pos)                                 # 4,8,12,16,20,...,64
                     num_obj_ptr_tokens = obj_ptrs.shape[0]
                 else:
                     num_obj_ptr_tokens = 0

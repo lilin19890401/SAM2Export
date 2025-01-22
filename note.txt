@@ -1,0 +1,9 @@
+trtexec.exe --onnx=D:\DeepLearning\segmentation\SAM2Export\checkpoints\small\memory_attention.onnx --fp16 --saveEngine=memory_attention.fp16.engine --minShapes=mem_atten_memory_0:1x256,mem_atten_memory_1:1x64x64x64,mem_atten_memory_pos_embed:1x1x64 --optShapes=mem_atten_memory_0:16x256,mem_atten_memory_1:7x64x64x64,mem_atten_memory_pos_embed:28736x1x64 --maxShapes=mem_atten_memory_0:16x256,mem_atten_memory_1:7x64x64x64,mem_atten_memory_pos_embed:28736x1x64
+
+trtexec.exe --onnx=D:\DeepLearning\segmentation\SAM2Export\checkpoints\small\memory_attention.onnx --saveEngine=memory_attention.fp32.engine --minShapes=mem_atten_memory_0:1x256,mem_atten_memory_1:1x64x64x64,mem_atten_memory_pos_embed:1x1x64 --optShapes=mem_atten_memory_0:16x256,mem_atten_memory_1:7x64x64x64,mem_atten_memory_pos_embed:28736x1x64 --maxShapes=mem_atten_memory_0:16x256,mem_atten_memory_1:7x64x64x64,mem_atten_memory_pos_embed:28736x1x64
+
+
+
+trtexec.exe --onnx=D:\DeepLearning\segmentation\SAM2Export\checkpoints\small\image_encoder.onnx --fp16 --saveEngine=image_encoder.fp16.engine
+
+trtexec.exe --onnx=D:\DeepLearning\segmentation\SAM2Export\checkpoints\small\image_encoder.onnx --saveEngine=image_encoder.fp32.engine
