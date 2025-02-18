@@ -15,3 +15,7 @@ trtexec.exe --onnx=D:\DeepLearning\segmentation\SAM2Export\checkpoints\small\mem
 trtexec.exe --onnx=D:\DeepLearning\segmentation\SAM2Export\checkpoints\small\image_encoder_2.onnx --fp16 --saveEngine=image_encoder_2.fp16.engine
 
 trtexec.exe --onnx=D:\DeepLearning\segmentation\SAM2Export\checkpoints\small\image_encoder_2.onnx --saveEngine=image_encoder_2.fp32.engine
+
+
+
+trtexec.exe --onnx=D:\DeepLearning\segmentation\SAM2Export\checkpoints\small2.1\ObjPtr_TposProj_dynamic_2.1.onnx --saveEngine=ObjPtr_TposProj_dynamic_2.1.fp32.engine --minShapes=obj_pos:1x256 --optShapes=obj_pos:16x256 --maxShapes=obj_pos:16x256
