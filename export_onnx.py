@@ -15,7 +15,7 @@ from src.Module import AddTopsEncToObjPtrs
 from sam2.build_sam import build_sam2
 from sam2.build_sam import build_sam2_video_predictor
 print(f"Python version: {sys.version}, {sys.version_info} ")
-
+print(f"Torch version: {torch.__version__} ")
 print(f"Onnx version: {onnx.__version__}")
 
 def colorstr(*input):
@@ -444,8 +444,8 @@ if __name__ == "__main__":
 
 
     ### 这个不能简化，不然使用TRT加速时结果不对
-    # image_encoder = ImageEncoder(sam2_model).cpu()
-    # export_image_encoder(image_encoder, args.outdir, args.version, IsSimplify=False)
+    image_encoder = ImageEncoder(sam2_model).cpu()
+    export_image_encoder(image_encoder, args.outdir, args.version, IsSimplify=False)
 
     # image_decoder = ImageDecoder(sam2_model).cpu()
     # export_image_decoder(image_decoder, args.outdir, args.version, Isdynamic=True, IsSimplify=True)
@@ -456,15 +456,15 @@ if __name__ == "__main__":
     image_decoder_init_tracker = ImageDecoderInitTracker(sam2_model).cpu()
     export_image_decoder_init_tracker(image_decoder_init_tracker, args.outdir, args.version, Isdynamic=True, IsSimplify=True)
 
-    # mem_attention = MemAttention(sam2_model).cpu()
-    # export_memory_attention(mem_attention, args.outdir, args.version, Isdynamic=True, IsSimplify=True)
-    #
-    # mem_encoder   = MemEncoder(sam2_model).cpu()
-    # export_memory_encoder(mem_encoder, args.outdir, args.version, IsSimplify=False)
+    mem_attention = MemAttention(sam2_model).cpu()
+    export_memory_attention(mem_attention, args.outdir, args.version, Isdynamic=True, IsSimplify=True)
+
+    mem_encoder   = MemEncoder(sam2_model).cpu()
+    export_memory_encoder(mem_encoder, args.outdir, args.version, IsSimplify=False)
 
 
     # objptr_tposproj = ObjPtr_TposProj(sam2_model).cpu()
     # export_ObjPtr_TposProj(objptr_tposproj, args.outdir, args.version, Isdynamic=True, IsSimplify=True)
 
-    # addtops_enc_obj_ptrs = AddTopsEncToObjPtrs(sam2_model).cpu()
-    # export_AddTopsEncToObjPtrs(addtops_enc_obj_ptrs, args.outdir, args.version, Isdynamic=True, IsSimplify=True)
+    addtops_enc_obj_ptrs = AddTopsEncToObjPtrs(sam2_model).cpu()
+    export_AddTopsEncToObjPtrs(addtops_enc_obj_ptrs, args.outdir, args.version, Isdynamic=True, IsSimplify=True)
