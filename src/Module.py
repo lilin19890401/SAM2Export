@@ -4,6 +4,7 @@ from typing import Any
 from sam2.build_sam import build_sam2
 from sam2.modeling.sam2_base import SAM2Base
 from sam2.utils.misc import fill_holes_in_mask_scores
+from sam2.modeling.sam2_utils import get_1d_sine_pe
 
 class ImageEncoder(nn.Module):
     def __init__(self, sam_model: SAM2Base) -> None:
@@ -118,7 +119,8 @@ class MemEncoder(nn.Module):
             current_vision_feats=pix_feat,
             feat_sizes=self.feat_sizes,
             pred_masks_high_res=mask_for_mem,
-            is_mask_from_pts=mask_from_pts == torch.tensor([[1]]),
+            object_score_logits=None,           ####这里可修改
+            is_mask_from_pts=mask_from_pts.to(torch.int32) == torch.tensor([[1]]),
         )
         print(maskmem_features.shape)   # [1,64,64,64]
         # maskmem_features = maskmem_features.view(1, 64, 64*64).permute(2, 0, 1)
@@ -178,4 +180,160 @@ class ImageDecoder(nn.Module):
         # obj_ptr                       [1, 256]
         # mask_for_mem                  [1, 1, 1024, 1024]
         # pred_mask                     [1, 1, 1024, 1024]
-        return obj_ptr, mask_for_mem, pred_mask,
+        return obj_ptr, mask_for_mem, pred_mask
+
+class ImageDecoder_Tracker(nn.Module):
+    def __init__(self, sam_model: SAM2Base) -> None:
+        super().__init__()
+        self.model = sam_model
+        self.sigmoid_scale_for_mem_enc = sam_model.sigmoid_scale_for_mem_enc
+        self.sigmoid_bias_for_mem_enc = sam_model.sigmoid_bias_for_mem_enc
+    @torch.no_grad()
+    def forward(
+        self,
+        pix_feat_with_mem: torch.Tensor,    # [1,256,64,64]         fused the visual feature with previous memory features in the memory bank
+        high_res_feats_0: torch.Tensor,     # [1, 32, 256, 256]     High-resolution feature
+        high_res_feats_1: torch.Tensor,     # [1, 64, 128, 128]
+    ):
+        high_res_feats = [high_res_feats_0, high_res_feats_1]
+
+        sam_outputs = self.model._forward_sam_heads(
+            backbone_features=pix_feat_with_mem,
+            point_inputs=None,
+            mask_inputs=None,
+            high_res_features=high_res_feats,
+            multimask_output=True
+        )
+        (
+            _,                      # low_res_multimasks [1,3,256,256]
+            _,                      # high_res_multimasks [1,3,1024,1024]
+            _,                      # ious [1,3]
+            low_res_masks,          # [1,1,256,256]
+            high_res_masks,         # [1,1,1024,1024]
+            obj_ptr,                # [1,256]
+            object_score_logits,    # [1,1]
+        ) = sam_outputs
+        # 处理高分辨率mask
+        # apply sigmoid on the raw mask logits to turn them into range (0, 1).这里的值给后续的MemoryEncoder使用
+        mask_for_mem = torch.sigmoid(high_res_masks)
+        mask_for_mem = mask_for_mem * self.sigmoid_scale_for_mem_enc
+        mask_for_mem = mask_for_mem + self.sigmoid_bias_for_mem_enc
+        # potentially fill holes in the predicted masks
+        pred_mask = fill_holes_in_mask_scores(low_res_masks, 8)
+        # 还原到模型输入大小
+        # pred_mask = torch.nn.functional.interpolate(
+        #     pred_mask,
+        #     size=(high_res_masks.shape[2], high_res_masks.shape[3]),
+        #     mode="bilinear",
+        #     align_corners=False,
+        # )
+
+        # obj_ptr                       [1, 256]
+        # mask_for_mem                  [1, 1, 1024, 1024]
+        # pred_mask                     [1, 1, 1024, 1024]
+        return obj_ptr, mask_for_mem, pred_mask
+
+class ImageDecoderInitTracker(nn.Module):
+    def __init__(self, sam_model: SAM2Base) -> None:
+        super().__init__()
+        self.model = sam_model
+        self.sigmoid_scale_for_mem_enc = sam_model.sigmoid_scale_for_mem_enc
+        self.sigmoid_bias_for_mem_enc = sam_model.sigmoid_bias_for_mem_enc
+    @torch.no_grad()
+    def forward(
+        self,
+        point_coords: torch.Tensor,         # [1, num_points, 2]         handle point prompts
+        point_labels: torch.Tensor,         # [1, num_points]
+        pix_feat_with_mem: torch.Tensor,    # [1, 256, 64, 64]           fused the visual feature with previous memory features in the memory bank
+        high_res_feats_0: torch.Tensor,     # [1, 32, 256, 256]          High-resolution feature
+        high_res_feats_1: torch.Tensor,     # [1, 64, 128, 128]
+        is_init_frame: torch.Tensor,        # [1,1]
+    ):
+        #point_inputs = {"point_coords":point_coords,"point_labels":point_labels}
+        high_res_feats = [high_res_feats_0, high_res_feats_1]
+        condition = torch.sum(is_init_frame.to(torch.int32)) > 0
+        point_inputs_coord = torch.where(condition, point_coords, torch.zeros(1,1,2) )
+        point_inputs_label = torch.where(condition, point_labels, -torch.ones(1, 1, dtype=torch.int32))
+        point_inputs = {"point_coords":point_inputs_coord, "point_labels":point_inputs_label}
+
+
+        sam_outputs = self.model._forward_sam_heads(
+            backbone_features=pix_feat_with_mem,
+            #point_inputs=point_inputs if is_init_frame.to(torch.int32) == torch.tensor([[1]]) else None,
+            point_inputs=point_inputs,
+            sam_point_coords=point_inputs_coord,
+            sam_point_labels=point_inputs_label,
+            mask_inputs=None,
+            high_res_features=high_res_feats,
+            multimask_output=True
+        )
+        (
+            _,                      # low_res_multimasks [1,3,256,256]
+            _,                      # high_res_multimasks [1,3,1024,1024]
+            _,                      # ious [1,3]
+            low_res_masks,          # [1,1,256,256]
+            high_res_masks,         # [1,1,1024,1024]
+            obj_ptr,                # [1,256]
+            object_score_logits,    # [1,1]
+        ) = sam_outputs
+        # 处理高分辨率mask
+        # apply sigmoid on the raw mask logits to turn them into range (0, 1).这里的值给后续的MemoryEncoder使用
+        mask_for_mem = torch.sigmoid(high_res_masks)
+        mask_for_mem = mask_for_mem * self.sigmoid_scale_for_mem_enc
+        mask_for_mem = mask_for_mem + self.sigmoid_bias_for_mem_enc
+        # potentially fill holes in the predicted masks
+        pred_mask = fill_holes_in_mask_scores(low_res_masks, 8)
+
+        # obj_ptr                       [1, 256]
+        # mask_for_mem                  [1, 1, 1024, 1024]
+        # pred_mask                     [1, 1, 1024, 1024]
+        return obj_ptr, mask_for_mem, pred_mask
+
+class ObjPtr_TposProj(nn.Module):
+    def __init__(self, sam_model: SAM2Base) -> None:
+        super().__init__()
+        self.model = sam_model
+        self.obj_ptr_tpos_proj = sam_model.obj_ptr_tpos_proj
+
+    @torch.no_grad()
+    def forward(
+        self,
+        obj_pos_embed             # [n, 256]
+    ):
+        tpos = self.obj_ptr_tpos_proj(obj_pos_embed)
+
+        return tpos
+
+class AddTopsEncToObjPtrs(nn.Module):
+    def __init__(self, sam_model: SAM2Base) -> None:
+        super().__init__()
+        self.model = sam_model
+        self.obj_ptr_tpos_proj = sam_model.obj_ptr_tpos_proj
+        self.max_obj_ptrs_in_encoder = 16
+        self.t_diff_max = self.max_obj_ptrs_in_encoder - 1
+        self.C = self.model.hidden_dim
+        self.mem_dim = self.model.hidden_dim
+        if hasattr(self.model.memory_encoder, "out_proj") and hasattr(
+            self.model.memory_encoder.out_proj, "weight"
+        ):
+            # if there is compression of memories along channel dim
+            self.mem_dim = self.model.memory_encoder.out_proj.weight.shape[0]
+        self.tpos_dim = self.C if self.model.proj_tpos_enc_in_obj_ptrs else self.mem_dim
+
+    @torch.no_grad()
+    def forward(
+            self,
+            pos_list : torch.Tensor,
+            #curr_frame : torch.Tensor, # [1,1]
+    ):
+        #torch.arange 生成的onnx在TRT中不能解析
+        #pos_list = torch.arange(curr_frame[0][0].to(torch.int32), dtype=torch.int32, device="cpu")
+        #pos_list = torch.range(0,curr_frame[0][0].to(torch.int32)-1, dtype=torch.int32, device="cpu")
+        #pos_list[0] = curr_frame
+        obj_pos = torch.tensor(pos_list[0], device="cpu")
+        obj_pos = get_1d_sine_pe(obj_pos / self.t_diff_max, dim=self.tpos_dim)
+        obj_pos = self.obj_ptr_tpos_proj(obj_pos)
+        obj_pos = obj_pos.unsqueeze(1).expand(-1, 1, self.mem_dim)
+        obj_pos = obj_pos.repeat_interleave(self.C // self.mem_dim, dim=0)
+
+        return obj_pos

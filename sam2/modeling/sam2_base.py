@@ -73,6 +73,9 @@ class SAM2Base(torch.nn.Module):
         # whether to add an extra linear projection layer for the temporal positional encoding in the object pointers to avoid potential interference
         # with spatial positional encoding (only relevant when both `use_obj_ptrs_in_encoder=True` and `add_tpos_enc_to_obj_ptrs=True`)
         proj_tpos_enc_in_obj_ptrs=False,
+        # whether to use signed distance (instead of unsigned absolute distance) in the temporal positional encoding in the object pointers
+        # (only relevant when both `use_obj_ptrs_in_encoder=True` and `add_tpos_enc_to_obj_ptrs=True`)
+        use_signed_tpos_enc_to_obj_ptrs=False,
         # whether to only attend to object pointers in the past (before the current frame) in the encoder during evaluation
         # (only relevant when `use_obj_ptrs_in_encoder=True`; this might avoid pointer information too far in the future to distract the initial tracking)
         only_obj_ptrs_in_the_past_for_eval=False,
@@ -88,6 +91,8 @@ class SAM2Base(torch.nn.Module):
         # hope to make recovery easier if there is a mistake and mitigate accumulation of errors
         soft_no_obj_ptr: bool = False,
         use_mlp_for_obj_ptr_proj: bool = False,
+        # add no obj embedding to spatial frames
+        no_obj_embed_spatial: bool = False,
         # extra arguments used to construct the SAM mask decoder; if not None, it should be a dict of kwargs to be passed into `MaskDecoder` class.
         sam_mask_decoder_extra_args=None,
         compile_image_encoder: bool = False,
@@ -110,6 +115,7 @@ class SAM2Base(torch.nn.Module):
         if proj_tpos_enc_in_obj_ptrs:
             assert add_tpos_enc_to_obj_ptrs  # these options need to be used together
         self.proj_tpos_enc_in_obj_ptrs = proj_tpos_enc_in_obj_ptrs
+        self.use_signed_tpos_enc_to_obj_ptrs = use_signed_tpos_enc_to_obj_ptrs
         self.only_obj_ptrs_in_the_past_for_eval = only_obj_ptrs_in_the_past_for_eval
 
         # Part 2: memory attention to condition current frame's visual features
@@ -174,7 +180,10 @@ class SAM2Base(torch.nn.Module):
             self.no_obj_ptr = torch.nn.Parameter(torch.zeros(1, self.hidden_dim))
             trunc_normal_(self.no_obj_ptr, std=0.02)
         self.use_mlp_for_obj_ptr_proj = use_mlp_for_obj_ptr_proj
-
+        self.no_obj_embed_spatial = None
+        if no_obj_embed_spatial:
+            self.no_obj_embed_spatial = torch.nn.Parameter(torch.zeros(1, self.mem_dim))
+            trunc_normal_(self.no_obj_embed_spatial, std=0.02)
         self._build_sam_heads()
         self.add_all_frames_to_correct_as_cond = add_all_frames_to_correct_as_cond
         self.max_cond_frames_in_attn = max_cond_frames_in_attn
@@ -210,7 +219,7 @@ class SAM2Base(torch.nn.Module):
         assert(self.directly_add_no_mem_embed == True)
         #assert(self.training == False)
         assert(self.mem_dim == 64)
-        assert(self.add_tpos_enc_to_obj_ptrs == False)
+        #assert(self.add_tpos_enc_to_obj_ptrs == False) # SAM2 is False、SAM2.1 is True
         assert(self.use_obj_ptrs_in_encoder == True)
         assert(self.add_all_frames_to_correct_as_cond == False)
         assert(self.multimask_output_in_sam == True)
@@ -222,7 +231,7 @@ class SAM2Base(torch.nn.Module):
         assert(self.pred_obj_scores == True)
         assert(self.use_obj_ptrs_in_encoder == True)
         assert(self.use_mlp_for_obj_ptr_proj == True)
-        assert(self.proj_tpos_enc_in_obj_ptrs == False)
+        # assert(self.proj_tpos_enc_in_obj_ptrs == False)   # SAM2.1 need
         assert(self.soft_no_obj_ptr == False)
         assert(self.fixed_no_obj_ptr == True)
         assert(self.non_overlap_masks_for_mem_enc == False)
@@ -303,6 +312,8 @@ class SAM2Base(torch.nn.Module):
         self,
         backbone_features,
         point_inputs=None,
+        sam_point_coords=None,
+        sam_point_labels=None,
         mask_inputs=None,
         high_res_features=None,
         multimask_output=False,
@@ -358,14 +369,18 @@ class SAM2Base(torch.nn.Module):
         assert backbone_features.size(3) == self.sam_image_embedding_size
 
         # a) Handle point prompts
-        if point_inputs is not None:
-            sam_point_coords = point_inputs["point_coords"]
-            sam_point_labels = point_inputs["point_labels"]
-            assert sam_point_coords.size(0) == B and sam_point_labels.size(0) == B
+        if sam_point_coords is not None and sam_point_labels is not None:
+            sam_point_coords = sam_point_coords
+            sam_point_labels = sam_point_labels
         else:
-            # If no points are provide, pad with an empty point (with label -1)
-            sam_point_coords = torch.zeros(B, 1, 2, device=device)
-            sam_point_labels = -torch.ones(B, 1, dtype=torch.int32, device=device)
+            if point_inputs is not None:
+                sam_point_coords = point_inputs["point_coords"]
+                sam_point_labels = point_inputs["point_labels"]
+                assert sam_point_coords.size(0) == B and sam_point_labels.size(0) == B
+            else:
+                # If no points are provide, pad with an empty point (with label -1)
+                sam_point_coords = torch.zeros(B, 1, 2, device=device)
+                sam_point_labels = -torch.ones(B, 1, dtype=torch.int32, device=device)
 
         # b) Handle mask prompts
         if mask_inputs is not None:
@@ -725,6 +740,7 @@ class SAM2Base(torch.nn.Module):
             return pix_feat
 
         num_obj_ptr_tokens = 0
+        tpos_sign_mul = -1 if track_in_reverse else 1
         # Step 1: condition the visual features of the current frame on previous memories
         if not is_init_cond_frame:
             # Retrieve the memories encoded with the maskmem backbone
@@ -806,7 +822,14 @@ class SAM2Base(torch.nn.Module):
                     ptr_cond_outputs = selected_cond_outputs
                 pos_and_ptrs = [
                     # Temporal pos encoding contains how far away each pointer is from current frame
-                    (abs(frame_idx - t), out["obj_ptr"])
+                    (
+                        (
+                            (frame_idx - t) * tpos_sign_mul
+                            if self.use_signed_tpos_enc_to_obj_ptrs
+                            else abs(frame_idx - t)
+                        ),
+                        out["obj_ptr"],
+                    )
                     for t, out in ptr_cond_outputs.items()
                 ]
                 # Add up to (max_obj_ptrs_in_encoder - 1) non-conditioning frames before current frame
@@ -927,6 +950,7 @@ class SAM2Base(torch.nn.Module):
         current_vision_feats,
         feat_sizes,
         pred_masks_high_res,
+        object_score_logits,
         is_mask_from_pts,
         export_to_onnx = False,
         import_from_onnx = False,
@@ -955,7 +979,7 @@ class SAM2Base(torch.nn.Module):
                 pred_masks_high_res
             )
         # scale the raw mask logits with a temperature before applying sigmoid
-        binarize = self.binarize_mask_from_pts_for_mem_enc and is_mask_from_pts
+        binarize = self.binarize_mask_from_pts_for_mem_enc and is_mask_from_pts > 0
         if binarize and not self.training:
             mask_for_mem = (pred_masks_high_res > 0).float()
         else:
@@ -1005,6 +1029,16 @@ class SAM2Base(torch.nn.Module):
 
         maskmem_features = vision_features
         maskmem_pos_enc = vision_pos_enc
+
+        # add a no-object embedding to the spatial memory to indicate that the frame
+        # is predicted to be occluded (i.e. no object is appearing in the frame)
+        if self.no_obj_embed_spatial is not None and object_score_logits is not None:
+            is_obj_appearing = (object_score_logits > 0).float()
+            maskmem_features += (
+                                        1 - is_obj_appearing[..., None, None]
+                                ) * self.no_obj_embed_spatial[..., None, None].expand(
+                *maskmem_features.shape
+            )
 
         return maskmem_features, maskmem_pos_enc
 
@@ -1097,7 +1131,7 @@ class SAM2Base(torch.nn.Module):
             low_res_masks,
             high_res_masks,
             obj_ptr,
-            _,
+            object_score_logits,
         ) = sam_outputs
 
         current_out["pred_masks"] = low_res_masks
@@ -1112,6 +1146,7 @@ class SAM2Base(torch.nn.Module):
                 current_vision_feats=current_vision_feats,
                 feat_sizes=feat_sizes,
                 pred_masks_high_res=high_res_masks_for_mem_enc,
+                object_score_logits=object_score_logits,
                 is_mask_from_pts=(point_inputs is not None),
                 export_to_onnx=export_to_onnx,
                 import_from_onnx=import_from_onnx,
