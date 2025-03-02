@@ -15,7 +15,7 @@ from src.Module import AddTopsEncToObjPtrs
 from sam2.build_sam import build_sam2
 from sam2.build_sam import build_sam2_video_predictor
 print(f"Python version: {sys.version}, {sys.version_info} ")
-print(f"Torch version: {torch.__version__} ")
+
 print(f"Onnx version: {onnx.__version__}")
 
 def colorstr(*input):
